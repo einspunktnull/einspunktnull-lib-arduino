@@ -1,0 +1,387 @@
+
+
+
+
+#include <SAAP.h>
+
+//PINS
+const int PIN_DIGITAL_IN_TOOGLEBUTTON = 6;
+const int PIN_ANALOG_OUT_SERVO = 3;
+const int PIN_ANALOG_OUT_LED = 5;
+const int PIN_ANALOG_IN_POTI = 0;
+
+//COMMUNICATION SAAP
+const long BAUDRATE = 115200;
+HardwareSerial serial = Serial;
+SAAP saap;
+
+
+void setup() {
+  saap.initialize(onError, &serial, BAUDRATE);
+}
+
+void loop() {
+  saap.receive();
+}
+
+
+
+void onError(const String errorNum, const uint8_t command, const uint8_t numValues)
+{
+  String send = errorNum + "," + (char) command;
+  for (int i = 0; i < numValues; i++)
+  {
+    String str = saap.getString();
+    if(i>0)send += "&";
+    send+=str;
+  }
+  send+="#";
+  saap.write('!', send);
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#ifndef SAAP_H_
+#define SAAP_H_
+
+
+#include <inttypes.h>
+#include <WString.h>
+#include <HardwareSerial.h>
+#include "SAAPMessage.h"
+
+const static String ERROR_UNKNOWN_COMMAND = "1";
+const static String ERROR_INVALID_ARGUMENT_COUNT = "2";
+
+const uint8_t BYTE_BREAK = '|';
+const uint8_t BYTE_DELIMITER = ',';
+const uint8_t BYTE_END = ';';
+
+class SAAP
+{
+
+		private:
+
+		HardwareSerial *_serialPointer;
+
+		const static uint8_t BUFFER_SIZE = 64;
+		const static uint8_t BUFFER_WAIT_TIME = 20;
+		const static uint8_t FUNCTION_BUFFER_SIZE = 240;
+
+		uint8_t _byteCommand;
+		uint8_t _position;
+		uint8_t _bufferIn[BUFFER_SIZE];
+		uint8_t _bufferOut[BUFFER_SIZE];
+		uint8_t _count;
+		uint8_t _numValues;
+
+		typedef void (*FunctionPointer)(const uint8_t command, const uint8_t numValues);
+		FunctionPointer _functionPointers[FUNCTION_BUFFER_SIZE];
+		uint8_t _functionNumArguments[FUNCTION_BUFFER_SIZE];
+
+		typedef void (*ErrorFunctionPointer)(const String errorNum, const uint8_t command, const uint8_t numValues);
+		ErrorFunctionPointer _errorFctPtr;
+
+		void flush();
+		void handleCommand();
+		void writeMessage(SAAPMessage &msg);
+
+		struct BytesValues
+		{
+				unsigned int len;
+				uint8_t *bytesPtr;
+		};
+		BytesValues getBytes();
+
+	public:
+		SAAP();
+		void initialize(ErrorFunctionPointer errorFctPtr, HardwareSerial *serialPtr, long baudrate);
+		bool read();
+		void receive();
+		void registerFunction(const uint8_t command, FunctionPointer fctPtr, const uint8_t numArguments);
+		void write(const uint8_t command, const String &data);
+		void write(const uint8_t command, uint8_t num, ...);
+
+		String getString();
+		int getInt();
+		long getLong();
+		double getDouble();
+
+
+};
+
+#endif
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#include "Arduino.h"
+#include "SAAP.h"
+#include "SAAPMessage.h"
+#include <stdarg.h>
+
+/*************************************************
+ * PUBLIC
+ *************************************************/
+
+SAAP::SAAP()
+{
+}
+
+void SAAP::initialize(ErrorFunctionPointer errorFctPtr, HardwareSerial *serialPtr, long baudrate)
+{
+	_serialPointer = serialPtr;
+
+	serialPtr->begin(baudrate);
+
+	_errorFctPtr = errorFctPtr;
+
+	for (int a = 0; a < FUNCTION_BUFFER_SIZE; a++)
+	{
+		_functionNumArguments[a] = 0;
+		_functionPointers[a] = 0;
+	}
+	_count = 0;
+	_numValues = 0;
+	_position = 1;
+}
+
+void SAAP::registerFunction(const uint8_t command, FunctionPointer fctPtr, const uint8_t numArguments)
+{
+	_functionNumArguments[command] = numArguments;
+	_functionPointers[command] = fctPtr;
+}
+
+void SAAP::receive()
+{
+
+	uint8_t byte;
+
+	if (_serialPointer->available() > 0)
+	{
+
+		bool msgComplete = false;
+
+		while (!msgComplete)
+		{
+			if (_serialPointer->available() > 0)
+			{
+
+				byte = _serialPointer->read();
+
+				_bufferIn[_count] = byte;
+				_count++;
+
+				if (byte == BYTE_END)
+				{
+					handleCommand();
+					msgComplete=true;
+					flush();
+				}
+			}
+		}
+	}
+}
+
+void SAAP::flush()
+{
+	for (uint8_t i = 0; i < BUFFER_SIZE; i++)
+	{
+		_bufferIn[i] = 0;
+	}
+	_count = 0;
+	_numValues = 0;
+	_position = 1;
+}
+
+void SAAP::handleCommand()
+{
+
+	_serialPointer->println("handleCommand");
+
+	//Command
+	uint8_t command = _bufferIn[0];
+
+	if (_count <= 1)
+	{
+		_numValues = 0;
+	}
+	else
+	{
+		_numValues = 1;
+		for (int a = 1; a < _count; a++)
+		{
+			if (_bufferIn[a] == BYTE_DELIMITER) _numValues++;
+		}
+	}
+
+	uint8_t numArguments = _functionNumArguments[command];
+	void (*FunctionPointer)(const uint8_t command, const uint8_t numValues) = _functionPointers[command];
+
+	if (FunctionPointer == 0)
+	{
+		_errorFctPtr(ERROR_UNKNOWN_COMMAND, command, _numValues);
+		return;
+	}
+
+	if (numArguments != _numValues)
+	{
+		_errorFctPtr(ERROR_INVALID_ARGUMENT_COUNT, command, _numValues);
+		return;
+	}
+
+	FunctionPointer(command, _numValues);
+}
+
+void SAAP::write(const uint8_t command, const String &data)
+{
+	SAAPMessage msg;
+	msg.append(command);
+	msg.append(data);
+	msg.append(BYTE_END);
+	writeMessage(msg);
+}
+
+void SAAP::write(const uint8_t command, uint8_t num, ...)
+{
+	SAAPMessage msg;
+	msg.append(command);
+
+	va_list arguments;
+	va_start(arguments, num);
+	for (int i = 0; i < num; i++)
+	{
+		msg.append(va_arg ( arguments, double ));
+		va_end(arguments);
+		msg.append(BYTE_END);
+		writeMessage(msg);
+	}
+}
+
+String SAAP::getString()
+{
+
+
+	BytesValues bv = getBytes();
+
+	unsigned int len = bv.len;
+	uint8_t *bytesPtr = bv.bytesPtr;
+
+	char txt[len + 1];
+
+	for (unsigned int i = 0; i < len; ++i)
+	{
+		txt[i] = bytesPtr[i];
+	}
+	txt[len] = '\0';
+
+	_serialPointer->println(len);
+	String ret = String(txt);
+	return ret;
+}
+
+int SAAP::getInt()
+{
+	String asString = getString();
+	int len = asString.length() + 1;
+	char str[len];
+	asString.toCharArray(str, len);
+	int val = atoi(str);
+	return val;
+}
+
+long SAAP::getLong()
+{
+	String asString = getString();
+	int len = asString.length() + 1;
+	char str[len];
+	asString.toCharArray(str, len);
+	long val = atol(str);
+	return val;
+}
+
+double SAAP::getDouble()
+{
+	String asString = getString();
+	int len = asString.length() + 1;
+	char str[len];
+	asString.toCharArray(str, len);
+	double val = atof(str);
+	return val;
+}
+
+/*************************************************
+ * PRIVATE
+ *************************************************/
+
+SAAP::BytesValues SAAP::getBytes()
+{
+
+	int start = _position;
+	unsigned int len = 0;
+	for (int pos = start; pos < _count; pos++)
+	{
+		uint8_t byte = _buffer[pos];
+		if (byte == BYTE_DELIMITER)
+		{
+			len = pos - start;
+			_position = pos++;
+			break;
+		}
+		else if (pos == _count - 1)
+		{
+			len = pos - start + 1;
+			_position = pos;
+		}
+	}
+
+	uint8_t bytes[len];
+	for (unsigned int i = 0; i < len; i++)
+	{
+		bytes[i] = _buffer[start + i];
+	}
+}
+
+void SAAP::writeMessage(SAAPMessage &msg)
+{
+	int len = msg.setBytes(_bufferOut);
+	_serialPointer->write(_bufferOut, len);
+}
+
